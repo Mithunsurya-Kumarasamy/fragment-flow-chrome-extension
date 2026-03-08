@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fragment Flow: Multithreaded Downloader",
-  "version": "0.1.0",
+  "version": "1.0",
   "description": "An IDM-like manager using parallel processing to reduce system lag.",
   "permissions": [
     "downloads",
@@ -17,9 +17,6 @@
   },
   "action": {
     "default_popup": "popup.html"
-  },
-  "content_security_policy": {
-    "extension_pages": "style-src 'self' https://cdn.jsdelivr.net; script-src 'self' https://cdn.jsdelivr.net;"
   },
   "minimum_chrome_version": "109"
 }
