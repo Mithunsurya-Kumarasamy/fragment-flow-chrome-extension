@@ -1,71 +1,113 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const statusText = document.getElementById('status-text');
-    const threadCount = document.getElementById('thread-count');
-    const progressBar = document.getElementById('main-progress');
-    const percentDisplay = document.getElementById('percent-display');
-    const speedDisplay = document.getElementById('speed-display');
-    const testBtn = document.getElementById('test-btn');
+    const statusBadge = document.getElementById('status-badge');
+    const fileNameEl = document.getElementById('file-name');
+    const globalStatsEl = document.getElementById('global-stats');
+    const globalProgress = document.getElementById('global-progress');
+    const globalSpeedEl = document.getElementById('global-speed');
+    const globalPercentEl = document.getElementById('global-percent');
+    const threadsContainer = document.getElementById('threads-container');
+    const threadCountEl = document.getElementById('thread-count');
+    const noThreadsMsg = document.getElementById('no-threads-msg');
+    const actionBtn = document.getElementById('action-btn');
 
-    chrome.runtime.sendMessage({ action: "getStatus" }, (response) => {
-        if (chrome.runtime.lastError) {
-            console.error("Connection Error:", chrome.runtime.lastError);
-            statusText.innerText = "Error connecting to manager.";
-            return;
-        }
+    let threadElements = {};
+    let isPaused = false;
 
-        if (response) {
-            statusText.innerText = response.status;
-            threadCount.innerText = response.threads || 0;
-            if (response.progress) {
-                updateUI(response.progress, response.speed);
-            }
+    // Handle Pause/Resume clicks
+    actionBtn.addEventListener('click', () => {
+        isPaused = !isPaused;
+        if (isPaused) {
+            chrome.runtime.sendMessage({ action: "pause" });
+            setUIPaused();
+        } else {
+            chrome.runtime.sendMessage({ action: "resume" });
+            setUIResumed();
         }
     });
 
-    testBtn.addEventListener('click', () => {
-        testBtn.disabled = true;
-        testBtn.innerText = "Checking...";
+    function setUIPaused() {
+        actionBtn.innerText = "Resume";
+        actionBtn.classList.replace('text-primary', 'text-success');
+        statusBadge.innerText = "Paused";
+        statusBadge.classList.replace('text-success', 'text-warning');
+        globalSpeedEl.innerText = "0 KB/s";
+    }
 
-        chrome.runtime.sendMessage({ action: "testConnection" }, (response) => {
-            if (response && response.success) {
-                // Change button style using Bootstrap classes
-                testBtn.classList.replace('btn-primary', 'btn-success');
-                testBtn.innerText = "Manager Connected!";
-                statusText.innerText = "Ready to accelerate downloads.";
-            } else {
-                testBtn.classList.replace('btn-primary', 'btn-danger');
-                testBtn.innerText = "Connection Failed";
-            }
-        });
-    });
+    function setUIResumed() {
+        actionBtn.innerText = "Pause";
+        actionBtn.classList.replace('text-success', 'text-primary');
+        statusBadge.innerText = "Downloading";
+        statusBadge.classList.replace('text-warning', 'text-success');
+    }
 
-    function updateUI(percent, speed) {
-        // Update the width of the Bootstrap progress bar
-        progressBar.style.width = `${percent}%`;
-        progressBar.setAttribute('aria-valuenow', percent);
+    function initDownloadUI(fileName, totalMB, numThreads) {
+        statusBadge.innerText = "Downloading";
+        statusBadge.classList.replace('text-primary', 'text-success');
+        actionBtn.style.display = 'inline-block'; // Show the button
+        fileNameEl.innerText = fileName || "fragment_download.bin";
+        globalStatsEl.innerText = `0.00 / ${totalMB.toFixed(2)} MB`;
+        threadCountEl.innerText = numThreads;
         
-        // Update text displays
-        percentDisplay.innerText = `${percent}%`;
-        speedDisplay.innerText = speed || "0 KB/s";
-        
-        if (percent > 0) {
-            statusText.innerText = "Downloading segments...";
+        threadsContainer.innerHTML = '';
+        threadElements = {};
+        noThreadsMsg.style.display = 'none';
+
+        for (let i = 0; i < numThreads; i++) {
+            const threadRow = document.createElement('div');
+            threadRow.className = 'thread-row';
+            threadRow.innerHTML = `
+                <div class="d-flex justify-content-between x-small mb-1">
+                    <span class="text-muted fw-bold">Part ${i + 1}</span>
+                    <span id="thread-stats-${i}" class="text-secondary">0.00 / 0.00 MB</span>
+                </div>
+                <div class="progress thread-bar">
+                    <div id="thread-progress-${i}" class="progress-bar bg-info" style="width: 0%"></div>
+                </div>
+            `;
+            threadsContainer.appendChild(threadRow);
+            threadElements[i] = {
+                bar: document.getElementById(`thread-progress-${i}`),
+                stats: document.getElementById(`thread-stats-${i}`)
+            };
         }
     }
 
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((message) => {
         if (message.action === "downloadInfo") {
             if (message.supported) {
-                statusText.innerText = `Target locked: ${message.sizeMB} MB. Ready to split.`;
-                threadCount.innerText = message.threads;
-                statusText.classList.replace('text-muted', 'text-success');
-            } else {
-                statusText.innerText = "Server restricts multithreading. Using standard download.";
-                statusText.classList.replace('text-muted', 'text-warning');
+                initDownloadUI("Target File", parseFloat(message.sizeMB), message.threads);
             }
         } 
         else if (message.action === "updateProgress") {
-            updateUI(message.percent, message.speed);
+            globalProgress.style.width = `${message.globalPercent}%`;
+            globalPercentEl.innerText = `${message.globalPercent}%`;
+            globalSpeedEl.innerText = message.speed || "0 KB/s";
+            globalStatsEl.innerText = `${message.globalDownloadedMB.toFixed(2)} / ${message.globalTotalMB.toFixed(2)} MB`;
+
+            if (message.threadsData) {
+                message.threadsData.forEach(thread => {
+                    const elements = threadElements[thread.id];
+                    if (elements) {
+                        elements.bar.style.width = `${thread.percent}%`;
+                        elements.stats.innerText = `${thread.downloadedMB.toFixed(2)} / ${thread.totalMB.toFixed(2)} MB`;
+                        if (thread.percent >= 100) {
+                            elements.bar.classList.replace('bg-info', 'bg-success');
+                        }
+                    }
+                });
+            }
+        }
+    });
+
+    chrome.runtime.sendMessage({ action: "getStatus" }, (response) => {
+        if (!chrome.runtime.lastError && response) {
+            if (response.isDownloading) {
+                 actionBtn.style.display = 'inline-block';
+                 if (response.isPaused) {
+                     isPaused = true;
+                     setUIPaused();
+                 }
+            }
         }
     });
 });

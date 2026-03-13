@@ -2,183 +2,244 @@ let chunkQueue = [];
 let results = [];
 let activeThreads = 4;
 
+// Global tracking
+let threadProgress = {};
+let globalDownloadedBytes = 0;
+let sessionDownloadedBytes = 0; // Tracks bytes downloaded strictly in the current resume session for accurate speed
+let globalTotalBytes = 0;
+let startTime = 0;
+let isDownloading = false;
+let isPaused = false;
+let currentTargetUrl = "";
+
 function createChunks(totalBytes, chunkSize = 2 * 1024 * 1024) {
-
-    console.log("Creating chunks...");
-
     let start = 0;
-
     while (start < totalBytes) {
-
         let end = Math.min(start + chunkSize - 1, totalBytes - 1);
-
         chunkQueue.push({ start, end });
-
-        console.log("Chunk created:", start, "-", end);
-
         start = end + 1;
     }
+}
 
-    console.log("Total chunks:", chunkQueue.length);
+function broadcastProgress() {
+    if (isPaused) return; // Don't broadcast speed if paused
+
+    const now = Date.now();
+    const elapsed = (now - startTime) / 1000;
+    const speedBps = elapsed > 0 ? sessionDownloadedBytes / elapsed : 0;
+    
+    let speedText = `${(speedBps / 1024).toFixed(2)} KB/s`;
+    if (speedBps > 1024 * 1024) {
+        speedText = `${(speedBps / (1024 * 1024)).toFixed(2)} MB/s`;
+    }
+
+    const globalPercent = globalTotalBytes > 0 ? Math.round((globalDownloadedBytes / globalTotalBytes) * 100) : 0;
+
+    const threadsData = Object.keys(threadProgress).map(id => ({
+        id: id,
+        percent: threadProgress[id].percent,
+        downloadedMB: threadProgress[id].downloadedMB,
+        totalMB: threadProgress[id].totalMB
+    }));
+
+    chrome.runtime.sendMessage({
+        action: "updateProgress",
+        globalPercent: globalPercent,
+        speed: speedText,
+        globalDownloadedMB: globalDownloadedBytes / (1024 * 1024),
+        globalTotalMB: globalTotalBytes / (1024 * 1024),
+        threadsData: threadsData
+    }).catch(() => {}); 
 }
 
 async function downloadWorker(url, id) {
-
-    console.log("Worker", id, "started");
-
     while (chunkQueue.length > 0) {
+        if (isPaused) break;
 
         const chunk = chunkQueue.shift();
-
         if (!chunk) break;
 
-        console.log("Worker", id, "downloading", chunk.start, "-", chunk.end);
+        const chunkSize = chunk.end - chunk.start + 1;
+        
+        threadProgress[id] = {
+            percent: 0,
+            downloadedMB: 0,
+            totalMB: chunkSize / (1024 * 1024)
+        };
 
         const response = await fetch(url, {
-            headers: {
-                Range: `bytes=${chunk.start}-${chunk.end}`
+            headers: { Range: `bytes=${chunk.start}-${chunk.end}` }
+        });
+
+        const reader = response.body.getReader();
+        const chunks = [];
+        let downloaded = 0;
+
+        while (true) {
+            if (isPaused) {
+                await reader.cancel(); // Abort the fetch stream immediately
+                break;
             }
-        });
 
-        const blob = await response.blob();
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        console.log("Worker", id, "finished", chunk.start, "-", chunk.end);
+            chunks.push(value);
+            downloaded += value.length;
+            globalDownloadedBytes += value.length;
+            sessionDownloadedBytes += value.length;
 
-        results.push({
-            start: chunk.start,
-            data: blob
-        });
+            threadProgress[id].percent = Math.round((downloaded / chunkSize) * 100);
+            threadProgress[id].downloadedMB = downloaded / (1024 * 1024);
+
+            broadcastProgress();
+        }
+
+        // Save whatever we managed to download
+        if (chunks.length > 0) {
+            const blob = new Blob(chunks);
+            results.push({ start: chunk.start, data: blob });
+        }
+
+        // If we paused before finishing the chunk, put the remainder back in the queue
+        if (isPaused && downloaded < chunkSize) {
+            chunkQueue.unshift({
+                start: chunk.start + downloaded,
+                end: chunk.end
+            });
+            break;
+        }
+        
+        if (!isPaused) {
+            threadProgress[id].percent = 100;
+            broadcastProgress();
+        }
     }
-
-    console.log("Worker", id, "finished all tasks");
 }
 
-async function startDownload(url, totalBytes) {
-
-    console.log("Starting multithread download");
-
-    chunkQueue = [];
-    results = [];
-
-    createChunks(totalBytes);
-
+async function startWorkers() {
+    sessionDownloadedBytes = 0;
+    startTime = Date.now();
     const workers = [];
-
+    
     for (let i = 0; i < activeThreads; i++) {
-
-        workers.push(downloadWorker(url, i));
+        workers.push(downloadWorker(currentTargetUrl, i));
     }
 
     await Promise.all(workers);
 
-    console.log("All workers completed");
+    // Only merge if the queue is completely empty and we aren't paused
+    if (!isPaused && chunkQueue.length === 0) {
+        mergeChunks();
+    }
+}
 
-    mergeChunks();
+function initDownload(url, totalBytes) {
+    isDownloading = true;
+    isPaused = false;
+    currentTargetUrl = url;
+    chunkQueue = [];
+    results = [];
+    threadProgress = {};
+    globalDownloadedBytes = 0;
+    globalTotalBytes = totalBytes;
+
+    createChunks(totalBytes);
+    startWorkers();
 }
 
 async function mergeChunks() {
-
-    console.log("Merging chunks...");
-
     results.sort((a, b) => a.start - b.start);
-
     const blobs = results.map(r => r.data);
-
     const finalBlob = new Blob(blobs);
 
-    console.log("Final file size:", finalBlob.size);
-
     const reader = new FileReader();
-
     reader.onloadend = function () {
-
         chrome.downloads.download({
             url: reader.result,
             filename: "fragment_download.bin",
             saveAs: true
         });
-
-        console.log("Download triggered successfully");
-
+        isDownloading = false; 
     };
-
     reader.readAsDataURL(finalBlob);
 }
 
+function openCenteredPopup() {
+    chrome.windows.getLastFocused((win) => {
+        const width = 420;
+        const height = 450;
+        const left = Math.round(win.left + (win.width / 2) - (width / 2));
+        const top = Math.round(win.top + (win.height / 2) - (height / 2));
+
+        chrome.windows.create({
+            url: chrome.runtime.getURL("popup.html"),
+            type: "popup",
+            width: width,
+            height: height,
+            left: left,
+            top: top,
+            focused: true
+        });
+    });
+}
+
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
-    if (!downloadItem.url.startsWith("http")) {
-        console.log("Ignoring internal extension download");
-        return;
-    }
-    console.log("Fragment Flow detected download:", downloadItem.url);
+    if (!downloadItem.url.startsWith("http")) return;
 
     chrome.downloads.cancel(downloadItem.id);
 
     try {
-
-        console.log("Checking file size...");
-
         const response = await fetch(downloadItem.url, { method: "HEAD" });
-
         const contentLength = response.headers.get("Content-Length");
 
         if (contentLength) {
+            globalTotalBytes = parseInt(contentLength);
+            isDownloading = true; 
 
-            const totalBytes = parseInt(contentLength);
-
-            const sizeMB = (totalBytes / (1024 * 1024)).toFixed(2);
-
-            console.log("File size:", sizeMB, "MB");
-
-            console.log("Using", activeThreads, "threads");
-
-            chrome.runtime.sendMessage({
-                action: "downloadInfo",
-                supported: true,
-                sizeMB: sizeMB,
-                threads: activeThreads
-            }).catch(() => {});
-
-            startDownload(downloadItem.url, totalBytes);
-
-        } else {
-
-            console.warn("Server did not return file size");
-
+            openCenteredPopup();
+            initDownload(downloadItem.url, globalTotalBytes);
         }
-
     } catch (err) {
-
-        console.warn("HEAD request blocked, using fallback");
-
         if (downloadItem.totalBytes > 0) {
-
-            startDownload(downloadItem.url, downloadItem.totalBytes);
-
-        } else {
-
-            console.error("Unable to determine file size");
-
+            globalTotalBytes = downloadItem.totalBytes;
+            isDownloading = true;
+            
+            openCenteredPopup();
+            initDownload(downloadItem.url, downloadItem.totalBytes);
         }
     }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-
     if (message.action === "getStatus") {
-
-        sendResponse({
-            status: "Manager Active",
-            threads: activeThreads
+        sendResponse({ 
+            isDownloading: isDownloading,
+            isPaused: isPaused,
+            threads: activeThreads 
         });
 
+        if (isDownloading) {
+            setTimeout(() => {
+                chrome.runtime.sendMessage({
+                    action: "downloadInfo",
+                    supported: true,
+                    sizeMB: (globalTotalBytes / (1024 * 1024)).toFixed(2),
+                    threads: activeThreads
+                }).catch(() => {});
+                broadcastProgress(); // Force UI to jump to current progress
+            }, 200);
+        }
     }
-
-    if (message.action === "testConnection") {
-
-        sendResponse({ success: true });
-
+    
+    // Handle UI controls
+    if (message.action === "pause") {
+        isPaused = true;
     }
-
+    if (message.action === "resume") {
+        isPaused = false;
+        startWorkers();
+    }
+    
     return true;
 });
