@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const threadCountEl = document.getElementById('thread-count');
     const noThreadsMsg = document.getElementById('no-threads-msg');
     const actionBtn = document.getElementById('action-btn');
+    const stopBtn = document.getElementById('stop-btn');
 
     let threadElements = {};
     let isPaused = false;
@@ -23,6 +24,17 @@ document.addEventListener('DOMContentLoaded', () => {
             chrome.runtime.sendMessage({ action: "resume" });
             setUIResumed();
         }
+    });
+
+    // Handle Stop click - completely halt the download
+    stopBtn.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: "stop" });
+        statusBadge.innerText = "Stopped";
+        statusBadge.className = "badge bg-danger text-white";
+        actionBtn.style.display = 'none';
+        stopBtn.style.display = 'none';
+        fileNameEl.innerText = "Download stopped";
+        globalSpeedEl.innerText = "0 KB/s";
     });
 
     function setUIPaused() {
@@ -44,6 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
         statusBadge.innerText = "Downloading";
         statusBadge.classList.replace('text-primary', 'text-success');
         actionBtn.style.display = 'inline-block'; // Show the button
+        stopBtn.style.display = 'inline-block'; // Show stop button
         fileNameEl.innerText = fileName || "fragment_download.bin";
         globalStatsEl.innerText = `0.00 / ${totalMB.toFixed(2)} MB`;
         threadCountEl.innerText = numThreads;

@@ -12,6 +12,8 @@ let isDownloading = false;
 let isPaused = false;
 let downloadCompleted = false;
 let currentTargetUrl = "";
+let broadcastTimeoutId = null; // Track broadcast timeout for cleanup
+let lastProgressBroadcastTime = 0; // Prevent excessive broadcasting
 function calculateDynamicThreads(totalBytes) {
     const MB = 1024 * 1024;
     const sizeMB = totalBytes / MB;
@@ -56,8 +58,13 @@ function createChunks(totalBytes, chunkSize = 2 * 1024 * 1024) {
 
 function broadcastProgress() {
     if (isPaused) return; // Don't broadcast speed if paused
+    if (!isDownloading) return; // Don't broadcast if not actively downloading
 
     const now = Date.now();
+    // Throttle broadcasting to at most every 500ms
+    if (now - lastProgressBroadcastTime < 500) return;
+    lastProgressBroadcastTime = now;
+
     const elapsed = (now - startTime) / 1000;
     const speedBps = elapsed > 0 ? sessionDownloadedBytes / elapsed : 0;
     
@@ -177,6 +184,13 @@ function initDownload(url, totalBytes) {
     threadProgress = {};
     globalDownloadedBytes = 0;
     globalTotalBytes = totalBytes;
+    lastProgressBroadcastTime = 0;
+    
+    // Clear any existing broadcast timeouts
+    if (broadcastTimeoutId) {
+        clearTimeout(broadcastTimeoutId);
+        broadcastTimeoutId = null;
+    }
 
     activeThreads = calculateDynamicThreads(totalBytes);
 
@@ -200,10 +214,29 @@ async function mergeChunks() {
         isDownloading = false;
         downloadCompleted = true;
         
+        // Clear any pending timeouts
+        if (broadcastTimeoutId) {
+            clearTimeout(broadcastTimeoutId);
+            broadcastTimeoutId = null;
+        }
+        
         // Notify popup that download is complete
         chrome.runtime.sendMessage({
             action: "downloadComplete"
         }).catch(() => {});
+        
+        // Reset state after a delay
+        setTimeout(() => {
+            isDownloading = false;
+            isPaused = false;
+            downloadCompleted = false;
+            chunkQueue = [];
+            results = [];
+            threadProgress = {};
+            globalDownloadedBytes = 0;
+            sessionDownloadedBytes = 0;
+            globalTotalBytes = 0;
+        }, 2000);
     };
     reader.readAsDataURL(finalBlob);
 }
@@ -263,8 +296,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             threads: activeThreads 
         });
 
-        if (isDownloading) {
-            setTimeout(() => {
+        // Only send additional info if actively downloading
+        if (isDownloading && !isPaused) {
+            // Clear any existing timeout to prevent multiple simultaneous timeouts
+            if (broadcastTimeoutId) {
+                clearTimeout(broadcastTimeoutId);
+            }
+            
+            broadcastTimeoutId = setTimeout(() => {
                 chrome.runtime.sendMessage({
                     action: "downloadInfo",
                     supported: true,
@@ -272,6 +311,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     threads: activeThreads
                 }).catch(() => {});
                 broadcastProgress(); // Force UI to jump to current progress
+                broadcastTimeoutId = null;
             }, 200);
         }
     }
@@ -283,6 +323,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "resume") {
         isPaused = false;
         startWorkers();
+    }
+    
+    // Handle Stop - completely halt the download
+    if (message.action === "stop") {
+        isDownloading = false;
+        isPaused = true;
+        downloadCompleted = false;
+        
+        // Clear the queue so workers stop immediately
+        chunkQueue = [];
+        
+        // Clear any pending timeouts
+        if (broadcastTimeoutId) {
+            clearTimeout(broadcastTimeoutId);
+            broadcastTimeoutId = null;
+        }
+        
+        // Reset all state
+        results = [];
+        threadProgress = {};
+        globalDownloadedBytes = 0;
+        sessionDownloadedBytes = 0;
+        globalTotalBytes = 0;
+        currentTargetUrl = "";
+        lastProgressBroadcastTime = 0;
     }
     
     return true;
