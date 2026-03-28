@@ -8,12 +8,17 @@
     <style>
     body {
         width: 400px;
-        min-height: 400px; /* Forces the popup to have enough height */
+        min-height: 580px; 
         background-color: #f4f7f6;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         margin: 0;
-        overflow: hidden; /* Hides both scrollbars */
+        overflow-y: auto;
     }
+
+    body::-webkit-scrollbar {
+        display: none;
+    }
+
     .header-bg {
         background: linear-gradient(135deg, #0d6efd, #0dcaf0);
         color: white;
@@ -66,18 +71,41 @@
 
         <div class="card p-3">
             <div class="d-flex justify-content-between align-items-center mb-2">
-                <h6 class="m-0 small fw-bold text-secondary">Active Threads</h6>
-                <span class="badge bg-secondary" id="thread-count">0</span>
+                <h6 class="m-0 small fw-bold text-secondary">Download Parts</h6>
+                <span class="badge bg-secondary" id="thread-count" title="Active Background Threads">0</span>
             </div>
-            <div id="threads-container">
-                <div class="text-center text-muted x-small py-2" id="no-threads-msg">No active tasks</div>
+            <div class="row g-2 mt-1" id="blocks-container">
+                <div class="col-3">
+                    <div class="progress" style="height: 20px; border-radius: 6px;">
+                        <div id="block-1" class="progress-bar bg-info" style="width: 0%"></div>
+                    </div>
+                    <div class="text-center x-small mt-1 text-muted fw-bold">Part 1</div>
+                </div>
+                <div class="col-3">
+                    <div class="progress" style="height: 20px; border-radius: 6px;">
+                        <div id="block-2" class="progress-bar bg-info" style="width: 0%"></div>
+                    </div>
+                    <div class="text-center x-small mt-1 text-muted fw-bold">Part 2</div>
+                </div>
+                <div class="col-3">
+                    <div class="progress" style="height: 20px; border-radius: 6px;">
+                        <div id="block-3" class="progress-bar bg-info" style="width: 0%"></div>
+                    </div>
+                    <div class="text-center x-small mt-1 text-muted fw-bold">Part 3</div>
+                </div>
+                <div class="col-3">
+                    <div class="progress" style="height: 20px; border-radius: 6px;">
+                        <div id="block-4" class="progress-bar bg-info" style="width: 0%"></div>
+                    </div>
+                    <div class="text-center x-small mt-1 text-muted fw-bold">Part 4</div>
+                </div>
             </div>
         </div>
 
         <!-- ==================== BANDWIDTH & ADAPTIVE SETTINGS ====================  -->
         <div class="card p-3 mt-3" id="bandwidth-card" style="display: none;">
             <div class="d-flex justify-content-between align-items-center mb-2">
-                <h6 class="m-0 small fw-bold text-secondary">📊 Network Performance</h6>
+                <h6 class="m-0 small fw-bold text-secondary">Network Performance</h6>
                 <span class="badge bg-info" id="bandwidth-badge">0 Mbps</span>
             </div>
             <div class="x-small text-muted">
@@ -95,10 +123,11 @@
                 </div>
             </div>
         </div>
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <h6 class="m-0 small fw-bold text-secondary">🔗 P2P Swarm Network</h6>
-                <span class="badge bg-info" id="peer-count">0 peers</span>
-            </div>
+            <div class="card p-3 mt-3" id="swarm-card" style="display: none;"></div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="m-0 small fw-bold text-secondary">P2P Swarm Network</h6>
+                    <span class="badge bg-info" id="peer-count">0 peers</span>
+                </div>
             <div class="x-small text-muted">
                 <div class="d-flex justify-content-between mb-1">
                     <span>Connected Peers:</span>

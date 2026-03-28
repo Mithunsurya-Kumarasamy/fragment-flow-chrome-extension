@@ -29,6 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let isPaused = false;
     let swarmStatsInterval = null;
     let uiInitialized = false; // Track if download UI has been initialized
+    let blockAccumulatedMB = [0, 0, 0, 0];
+    let previousThreadMB = {};
 
     // Handle Pause/Resume clicks
     actionBtn.addEventListener('click', () => {
@@ -86,27 +88,12 @@ document.addEventListener('DOMContentLoaded', () => {
         globalStatsEl.innerText = `0.00 / ${totalMB.toFixed(2)} MB`;
         threadCountEl.innerText = numThreads;
         
-        threadsContainer.innerHTML = '';
-        threadElements = {};
-        noThreadsMsg.style.display = 'none';
-
-        for (let i = 0; i < numThreads; i++) {
-            const threadRow = document.createElement('div');
-            threadRow.className = 'thread-row';
-            threadRow.innerHTML = `
-                <div class="d-flex justify-content-between x-small mb-1">
-                    <span class="text-muted fw-bold">Part ${i + 1}</span>
-                    <span id="thread-stats-${i}" class="text-secondary">0.00 / 0.00 MB</span>
-                </div>
-                <div class="progress thread-bar">
-                    <div id="thread-progress-${i}" class="progress-bar bg-info" style="width: 0%"></div>
-                </div>
-            `;
-            threadsContainer.appendChild(threadRow);
-            threadElements[i] = {
-                bar: document.getElementById(`thread-progress-${i}`),
-                stats: document.getElementById(`thread-stats-${i}`)
-            };
+        for (let i = 1; i <= 4; i++) {
+            let bar = document.getElementById(`block-${i}`);
+            if (bar) {
+                bar.style.width = `0%`;
+                bar.classList.replace('bg-success', 'bg-info');
+            }
         }
         
         uiInitialized = true;
@@ -228,17 +215,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`Chunks remaining: ${message.chunkCount}`);
             }
 
-            if (message.threadsData) {
+            // Delta Accumulation Logic for the 4 Blocks
+            if (message.threadsData && message.globalTotalMB > 0) {
+                // If the popup was opened mid-download, seed the array
+                let totalTracked = blockAccumulatedMB.reduce((a, b) => a + b, 0);
+                if (totalTracked === 0 && message.globalDownloadedMB > 0) {
+                    let baseline = parseFloat(message.globalDownloadedMB) / 4;
+                    blockAccumulatedMB = [baseline, baseline, baseline, baseline];
+                    message.threadsData.forEach(t => {
+                        previousThreadMB[t.id] = parseFloat(t.downloadedMB) || 0;
+                    });
+                }
+
+                // Process active chunks
                 message.threadsData.forEach(thread => {
-                    const elements = threadElements[thread.id];
-                    if (elements) {
-                        elements.bar.style.width = `${thread.percent}%`;
-                        elements.stats.innerText = `${thread.downloadedMB.toFixed(2)} / ${thread.totalMB.toFixed(2)} MB`;
-                        if (thread.percent >= 100) {
-                            elements.bar.classList.replace('bg-info', 'bg-success');
+                    let prev = previousThreadMB[thread.id] || 0;
+                    let curr = parseFloat(thread.downloadedMB) || 0;
+                    
+                    // If current is less than previous, thread picked up a new chunk.
+                    let delta = curr < prev ? curr : curr - prev;
+                    previousThreadMB[thread.id] = curr;
+
+                    if (delta > 0) {
+                        // Distribute the delta to the block that is trailing behind
+                        let minIndex = 0;
+                        for (let i = 1; i < 4; i++) {
+                            if (blockAccumulatedMB[i] < blockAccumulatedMB[minIndex]) {
+                                minIndex = i;
+                            }
                         }
+                        blockAccumulatedMB[minIndex] += delta;
                     }
                 });
+
+                // Update the DOM for the 4 static blocks
+                let expectedPerBlock = parseFloat(message.globalTotalMB) / 4;
+                for (let i = 0; i < 4; i++) {
+                    let percent = expectedPerBlock > 0 ? (blockAccumulatedMB[i] / expectedPerBlock) * 100 : 0;
+                    percent = Math.min(100, percent); // Cap at 100%
+
+                    let bar = document.getElementById(`block-${i+1}`);
+                    if (bar) {
+                        bar.style.width = `${percent}%`;
+                        if (percent >= 100) {
+                            bar.classList.replace('bg-info', 'bg-success');
+                        }
+                    }
+                }
             }
         }
         else if (message.action === "threadCountUpdated") {
@@ -267,6 +290,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const totalMB = parseFloat(message.totalMB) || 0;
             const downloadedMB = parseFloat(message.downloadedMB) || 0;
             globalStatsEl.innerText = `${downloadedMB.toFixed(2)} / ${totalMB.toFixed(2)} MB`;
+
+            for (let i = 1; i <= 4; i++) {
+                let bar = document.getElementById(`block-${i}`);
+                if (bar) {
+                    bar.style.width = `100%`;
+                    bar.classList.replace('bg-info', 'bg-success');
+                }
+            }
             
             // Stop swarm stats polling
             if (swarmStatsInterval) {
@@ -287,6 +318,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 fileNameEl.innerText = "✓ Download Complete!";
                 globalProgress.style.width = "100%";
                 globalPercentEl.innerText = "100%";
+
+                for (let i = 1; i <= 4; i++) {
+                    let bar = document.getElementById(`block-${i}`);
+                    if (bar) {
+                        bar.style.width = `100%`;
+                        bar.classList.replace('bg-info', 'bg-success');
+                    }
+                }
+
             } else if (response.isDownloading) {
                  actionBtn.style.display = 'inline-block';
                  if (response.isPaused) {
