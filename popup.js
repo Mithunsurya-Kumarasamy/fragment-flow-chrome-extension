@@ -215,43 +215,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`Chunks remaining: ${message.chunkCount}`);
             }
 
-            // Delta Accumulation Logic for the 4 Blocks
+            // Accurate Block Distribution Logic
             if (message.threadsData && message.globalTotalMB > 0) {
-                // If the popup was opened mid-download, seed the array
-                let totalTracked = blockAccumulatedMB.reduce((a, b) => a + b, 0);
-                if (totalTracked === 0 && message.globalDownloadedMB > 0) {
-                    let baseline = parseFloat(message.globalDownloadedMB) / 4;
-                    blockAccumulatedMB = [baseline, baseline, baseline, baseline];
-                    message.threadsData.forEach(t => {
-                        previousThreadMB[t.id] = parseFloat(t.downloadedMB) || 0;
-                    });
-                }
-
-                // Process active chunks
-                message.threadsData.forEach(thread => {
-                    let prev = previousThreadMB[thread.id] || 0;
-                    let curr = parseFloat(thread.downloadedMB) || 0;
-                    
-                    // If current is less than previous, thread picked up a new chunk.
-                    let delta = curr < prev ? curr : curr - prev;
-                    previousThreadMB[thread.id] = curr;
-
-                    if (delta > 0) {
-                        // Distribute the delta to the block that is trailing behind
-                        let minIndex = 0;
-                        for (let i = 1; i < 4; i++) {
-                            if (blockAccumulatedMB[i] < blockAccumulatedMB[minIndex]) {
-                                minIndex = i;
-                            }
-                        }
-                        blockAccumulatedMB[minIndex] += delta;
-                    }
+                // 1. Calculate how much data is actively downloading in current chunks
+                let activeMB = 0;
+                message.threadsData.forEach(t => {
+                    activeMB += (parseFloat(t.downloadedMB) || 0);
                 });
 
-                // Update the DOM for the 4 static blocks
+                // 2. Calculate completely finished chunks
+                let completedMB = parseFloat(message.globalDownloadedMB) - activeMB;
+                if (completedMB < 0) completedMB = 0;
+
+                // 3. Distribute finished chunks evenly across the 4 blocks as a baseline
+                let basePerBlock = completedMB / 4;
+                let blocks = [basePerBlock, basePerBlock, basePerBlock, basePerBlock];
+
+                // 4. Layer the active threads' progress on top to make it look "alive"
+                message.threadsData.forEach((thread, index) => {
+                    let blockIndex = index % 4; // Safely loops if you have 8 or 16 adaptive threads
+                    blocks[blockIndex] += (parseFloat(thread.downloadedMB) || 0);
+                });
+
+                // 5. Update the DOM
                 let expectedPerBlock = parseFloat(message.globalTotalMB) / 4;
                 for (let i = 0; i < 4; i++) {
-                    let percent = expectedPerBlock > 0 ? (blockAccumulatedMB[i] / expectedPerBlock) * 100 : 0;
+                    let percent = expectedPerBlock > 0 ? (blocks[i] / expectedPerBlock) * 100 : 0;
                     percent = Math.min(100, percent); // Cap at 100%
 
                     let bar = document.getElementById(`block-${i+1}`);
@@ -259,6 +248,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         bar.style.width = `${percent}%`;
                         if (percent >= 100) {
                             bar.classList.replace('bg-info', 'bg-success');
+                        } else {
+                            bar.classList.replace('bg-success', 'bg-info'); // Revert to blue if a new chunk starts
                         }
                     }
                 }
